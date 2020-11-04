@@ -116,3 +116,5 @@ class STEADDataset(data.Dataset):
         handles, labels = ax_e.get_legend_handles_labels()
         fig.legend(handles, labels, loc='center right')
         fig.suptitle(f'Trace {trace_attrs["trace_name"]}')
+
+        return fig
