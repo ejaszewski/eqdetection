@@ -72,8 +72,10 @@ class STEADDataset(data.Dataset):
     def filter(self, f):
         self.metadata = self.metadata[f(self.metadata)]
     
-    def split(self, frac, random=True):
+    def split(self, frac, random=True, tail=None):
         count = int(len(self.metadata) * frac)
+        if tail != None:
+            count = len(self.metadata) - tail
         indices = np.random.permutation(self.metadata.index) if random else self.metadata.index
         p1 = self.metadata.loc[indices[:count]]
         p2 = self.metadata.loc[indices[count:]]

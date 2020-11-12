@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
-class ChannelSELayer(nn.Module):
+class ChannelSE(nn.Module):
     """
     Re-implementation of Squeeze-and-Excitation (SE) block described in:
         *Hu et al., Squeeze-and-Excitation Networks, arXiv:1709.01507*
@@ -14,7 +13,7 @@ class ChannelSELayer(nn.Module):
         :param num_channels: No of input channels
         :param reduction_ratio: By how much should the num_channels should be reduced
         """
-        super(ChannelSELayer, self).__init__()
+        super(ChannelSE, self).__init__()
         num_channels_reduced = num_channels // reduction_ratio
         self.reduction_ratio = reduction_ratio
         self.fc1 = nn.Linear(num_channels, num_channels_reduced, bias=True)
@@ -28,17 +27,18 @@ class ChannelSELayer(nn.Module):
         :return: output tensor
         """
 
-        batch_size, num_channels, H = input_tensor.size() # W = 1
+        batch_size, num_channels, H = input_tensor.size()  # W = 1
         # Average along each channel
-        squeeze_tensor = input_tensor.view(batch_size, num_channels, -1).mean(dim=2)
+        squeeze_tensor = input_tensor.view(
+            batch_size, num_channels, -1).mean(dim=2)
 
         # channel excitation
         fc_out_1 = self.relu(self.fc1(squeeze_tensor))
         fc_out_2 = self.sigmoid(self.fc2(fc_out_1))
-        
+
         a, b = squeeze_tensor.size()
         fc_out_2 = fc_out_2.view(a, b, 1)
-        
-        
-        output_tensor = torch.mul(input_tensor, fc_out_2.expand_as(input_tensor))
+
+        output_tensor = torch.mul(
+            input_tensor, fc_out_2.expand_as(input_tensor))
         return output_tensor
