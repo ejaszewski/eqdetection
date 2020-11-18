@@ -16,9 +16,10 @@ from cs101.models.eqtnetwork import EQTNetwork
 
 # Training/Testing Parameters
 NUM_EPOCHS = 40         # Number of epochs to train for
-DATASET_FRAC = 0.666    # Fraction of the dataset to use
+DATASET_FRAC = 0.1      # Fraction of the dataset to use
 TRAIN_TEST_SPLIT = 0.8  # Fraction to use for training
 NUM_EXAMPLES = 5        # Number of examples per epoch
+IMPULSE_WIDTH = 10      # Impulse width
 
 # Locations of STEAD Dataset
 NPY_FILE = '/scratch/cs101/STEAD/stead_full.npy'
@@ -35,7 +36,7 @@ device = torch.device(DEVICE_TYPE, DEVICE_IDX)
 torch.backends.cudnn.benchmark = True
 
 # Set up the impulse signal
-impulse = SquareImpulse(10, 1)
+impulse = SquareImpulse(IMPULSE_WIDTH, 1)
 
 # Load the full dataset
 full_dataset = STEADDataset(CSV_FILE, NPY_FILE, impulse)
@@ -62,9 +63,12 @@ model = EQTNetwork().to(device)
 criterion_p = nn.BCEWithLogitsLoss().to(device)
 criterion_s = nn.BCEWithLogitsLoss().to(device)
 criterion_c = nn.BCEWithLogitsLoss().to(device)
-weight_p = 0.2
-weight_s = 0.3
-weight_c = 0.5
+WEIGHT_P = 0.2
+WIEGHT_S = 0.3
+WEIGHT_C = 0.5
+THRESHOLD_D = 0.5
+THRESHOLD_P = 0.3
+THRESHOLD_S = 0.3
 
 # Set up the optimizer and the LR scheduler
 optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -72,6 +76,11 @@ scheduler = optim.lr_scheduler.MultiplicativeLR(
     optimizer,
     lambda e: 0.1 if e % 20 == 19 else 1
 )
+
+ZERO = torch.tensor(0).to(device)
+ONE = torch.tensor(1).to(device)
+ZERO_F = torch.tensor(0.0).to(device)
+ONE_F = torch.tensor(1.0).to(device)
 
 # Each iteration is one full pass through the data
 for e in range(NUM_EPOCHS):
@@ -96,7 +105,7 @@ for e in range(NUM_EPOCHS):
         p_loss = criterion_p(p_pred, labels[0])
         s_loss = criterion_s(s_pred, labels[1])
         c_loss = criterion_c(c_pred, labels[2])
-        loss = weight_p * p_loss + weight_s * s_loss + weight_c * c_loss
+        loss = WEIGHT_P * p_loss + WIEGHT_S * s_loss + WEIGHT_C * c_loss
 
         # Make optimization step
         loss.backward()
@@ -111,6 +120,11 @@ for e in range(NUM_EPOCHS):
     writer.add_scalar('Loss/Train', loss_total / len(train_data), e)
 
     loss_total = 0
+    p_acc = 0
+    s_acc = 0
+    p_mae = 0
+    s_mae = 0
+    recall = 0
 
     # Inference only for now
     model.eval()
@@ -130,11 +144,33 @@ for e in range(NUM_EPOCHS):
             p_loss = criterion_p(p_pred, labels[0])
             s_loss = criterion_s(s_pred, labels[1])
             c_loss = criterion_c(c_pred, labels[2])
-            loss = weight_p * p_loss + weight_s * s_loss + weight_c * c_loss
+            loss = WEIGHT_P * p_loss + WIEGHT_S * s_loss + WEIGHT_C * c_loss
             loss_total += loss.item()
+
+            # Compute Accuracy
+            p_mags, p_times = p_pred.squeeze().max(1)
+            s_mags, s_times = s_pred.squeeze().max(1)
+            detection, _ = c_pred.squeeze().max(1)
+
+            p_pred_times = torch.where(p_mags > THRESHOLD_P, p_times, ZERO)
+            s_pred_times = torch.where(s_mags > THRESHOLD_S, s_times, ZERO)
+            detection_pred = torch.where(detection > THRESHOLD_D, ONE_F, ZERO_F)
+
+            p_abs_err = torch.abs(impulse.get_index(labels[0]) - p_pred_times)
+            s_abs_err = torch.abs(impulse.get_index(labels[1]) - s_pred_times)
+            p_acc += torch.where(p_abs_err < IMPULSE_WIDTH, ONE_F, ZERO_F).mean()
+            p_mae += p_abs_err.float().mean()
+            s_acc += torch.where(s_abs_err < IMPULSE_WIDTH, ONE_F, ZERO_F).mean()
+            s_mae += s_abs_err.float().mean()
+            recall += detection_pred.mean()
 
     # Log loss to TensorBoard
     writer.add_scalar('Loss/Test', loss_total / len(test_data), e)
+    writer.add_scalar('Metrics/P Arrival/Accuracy', p_acc / len(test_data), e)
+    writer.add_scalar('Metrics/S Arrival/Accuracy', s_acc / len(test_data), e)
+    writer.add_scalar('Metrics/P Arrival/MAE', p_mae / len(test_data), e)
+    writer.add_scalar('Metrics/S Arrival/MAE', s_mae / len(test_data), e)
+    writer.add_scalar('Metrics/Detection/Recall', recall / len(test_data), e)
 
     # Save example predictions
     with torch.no_grad():
