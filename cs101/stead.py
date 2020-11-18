@@ -17,6 +17,9 @@ class SquareImpulse(Impulse):
         impulse = torch.zeros(1, size)
         impulse[0, start - self.width:end + self.width] = self.magnitude
         return impulse
+    
+    def get_index(self, impulse):
+        return impulse.squeeze().argmax(1) + self.width
 
 class STEADDataset(data.Dataset):
     def __init__(self, csv_file, npy_file, impulse, transform=None, init_data=None):
