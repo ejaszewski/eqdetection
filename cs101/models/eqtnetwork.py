@@ -34,7 +34,7 @@ class EQEncoder(nn.Module):
             self.bilstm.append(nn.BatchNorm1d(16))
             prev_channels = 16
 
-        self.lstm = SimpleLSTM(16, 16, False)
+        self.lstm = SimpleLSTM(prev_channels, 16, False)
 
     def forward(self, x):
         # Run x through the CNNs
