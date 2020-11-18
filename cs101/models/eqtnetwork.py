@@ -67,7 +67,7 @@ class EQDecoder(nn.Module):
 
         # Add Attention (if requested)
         if attention:
-            self.attention = Attention(46, 16, 32, width=3)
+            self.attention = Attention(46, in_channels, 32, width=3)
         else:
             self.attention = None
 
