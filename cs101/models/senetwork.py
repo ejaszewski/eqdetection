@@ -1,110 +1,164 @@
 import torch.nn as nn
 
+from cs101.layers.cnn import PoolingCNN, ResidualCNN, UpsampleCNN
+from cs101.layers.rnn import SimpleLSTM
+from cs101.layers.eqt import Transformer, Attention
 from cs101.layers.se import ChannelSE
 
+
+class SEEncoder(nn.Module):
+    def __init__(self, in_channels, conv, res_cnn, lstm, bilstm):
+        super(SEEncoder, self).__init__()
+
+        self.cnn = nn.ModuleList()
+        self.res = nn.ModuleList()
+        self.bilstm = nn.ModuleList()
+
+        prev_channels = in_channels
+
+        # Add all of the convolutional layers
+        for channels, kernel, padding in conv:
+            self.cnn.append(
+                PoolingCNN(prev_channels, channels, kernel, padding, 2))
+            prev_channels = channels
+            self.cnn.append(ChannelSE(prev_channels, max(2, prev_channels//4)))
+        
+
+        # Add all of the ResCNN layers
+        for (channels, kernel) in res_cnn:
+            self.res.append(
+                ResidualCNN(channels, kernel, 0.1))
+            prev_channels = channels
+            self.res.append(ChannelSE(prev_channels, max(2, prev_channels//4)))
+        
+
+        # Add the BiLSTM layers
+        if lstm:
+            for _ in range(bilstm):
+                self.bilstm.append(SimpleLSTM(prev_channels, 16, True))
+                self.bilstm.append(nn.Conv1d(32, 16, 1))
+                self.bilstm.append(nn.BatchNorm1d(16))
+                prev_channels = 16
+
+            self.lstm = SimpleLSTM(prev_channels, 16, False)
+        else:
+            self.res.append(nn.Linear(prev_channels, 16))
+            self.bilstm = None
+            self.lstm = None
+        
+
+    def forward(self, x):
+        # Run x through the CNNs
+        for layer in self.cnn:
+            x = layer(x)
+
+        # Run x through the ResCNNs
+        for layer in self.res:
+            x = layer(x)
+            
+        # Run x through the BiLSTMs
+        if self.bilstm is not None:
+            for layer in self.bilstm:
+                x = layer(x)
+
+        # LSTM Layer
+        if self.lstm is not None:
+            x = self.lstm(x)
+
+        return x
+
+
+class SEDecoder(nn.Module):
+    def __init__(self, in_channels, conv, last, lstm=False, attention=False):
+        super(SEDecoder, self).__init__()
+
+        # Add LSTM (if requested)
+        if lstm:
+            self.lstm = SimpleLSTM(in_channels, in_channels, False)
+        else:
+            self.lstm = None
+
+        # Add Attention (if requested)
+        if attention:
+            self.attention = Attention(46, in_channels, 32, width=3)
+        else:
+            self.attention = None
+
+        prev_channels = in_channels
+
+        self.cnn = nn.ModuleList()
+
+        # Add convolutional layers
+        for channels, kernel, padding in conv:
+            self.cnn.append(
+                UpsampleCNN(prev_channels, channels, kernel, padding, 2))
+            prev_channels = channels
+            self.cnn.append(ChannelSE(prev_channels, max(2, prev_channels//4)))
+        
+        # Add activation-less final layer
+        self.cnn.append(
+            nn.Conv1d(prev_channels, last[0], last[1], padding=last[2]))
+
+    def forward(self, x):
+        # Run x through the LSTM if it exists
+        if self.lstm is not None:
+            x = self.lstm(x)
+
+        # Run x through the attention if it exists
+        if self.attention is not None:
+            x, _ = self.attention(x)
+
+        # Run x through the CNNs
+        for layer in self.cnn:
+            x = layer(x)
+
+        return x
+
+
 class SENetwork(nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        conv_ds=[(8, 11, 5), (16, 9, 4), (16, 7, 3), (32, 7, 3),
+                 (32, 5, 2), (64, 5, 2), (64, 3, 1)],
+        res_cnn=[(64, 3), (64, 3), (64, 3), (64, 3), (64, 3)],
+        conv_us=[(96, 3, 1), (96, 5, 3), (32, 5, 3), (32, 7, 4),
+                 (16, 7, 3), (16, 9, 4), (8, 11, 5)],
+        lstm=False,
+        bilstm=2
+    ):
         super(SENetwork, self).__init__()
 
-        self.conv_ds1 = nn.Conv1d(
-            in_channels=3, out_channels=8, kernel_size=11, padding=5)
-        self.conv_ds2 = nn.Conv1d(
-            in_channels=8, out_channels=16, kernel_size=7, padding=3)
-        self.conv_ds3 = nn.Conv1d(
-            in_channels=16, out_channels=32, kernel_size=5, padding=2)
-        self.conv_ds4 = nn.Conv1d(
-            in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        # Universal encoder
+        self.encoder = SEEncoder(3, conv_ds, res_cnn, lstm, bilstm)
 
-        self.conv_us_p1 = nn.Conv1d(
-            in_channels=64, out_channels=32, kernel_size=3, padding=1)
-        self.conv_us_p2 = nn.Conv1d(
-            in_channels=32, out_channels=16, kernel_size=5, padding=2)
-        self.conv_us_p3 = nn.Conv1d(
-            in_channels=16, out_channels=8, kernel_size=7, padding=3)
-        self.conv_us_p4 = nn.Conv1d(
-            in_channels=8, out_channels=1, kernel_size=11, padding=5)
+        # Transformers
+        self.transformer1 = Transformer(46, 16)
+        self.transformer2 = Transformer(46, 16)
 
-        self.conv_us_s1 = nn.Conv1d(
-            in_channels=64, out_channels=32, kernel_size=3, padding=1)
-        self.conv_us_s2 = nn.Conv1d(
-            in_channels=32, out_channels=16, kernel_size=5, padding=2)
-        self.conv_us_s3 = nn.Conv1d(
-            in_channels=16, out_channels=8, kernel_size=7, padding=3)
-        self.conv_us_s4 = nn.Conv1d(
-            in_channels=8, out_channels=1, kernel_size=11, padding=5)
+        self.se = ChannelSE(64, 16)
+#         self.transformer = Transformer(46, 16)
+        
 
-        self.conv_us_c1 = nn.Conv1d(
-            in_channels=64, out_channels=32, kernel_size=3, padding=1)
-        self.conv_us_c2 = nn.Conv1d(
-            in_channels=32, out_channels=16, kernel_size=5, padding=2)
-        self.conv_us_c3 = nn.Conv1d(
-            in_channels=16, out_channels=8, kernel_size=7, padding=3)
-        self.conv_us_c4 = nn.Conv1d(
-            in_channels=8, out_channels=1, kernel_size=11, padding=5)
-
-        self.mp1 = nn.MaxPool1d(2)
-
-        self.us1 = nn.Upsample(scale_factor=2)
-
-        self.cse_ds5 = ChannelSE(64, 16)
-        self.cse_us_p5 = ChannelSE(16, 4)
-        self.cse_us_s5 = ChannelSE(16, 4)
-        self.cse_us_c5 = ChannelSE(16, 4)
+        # Separate decoders
+        self.decoder_p = SEDecoder(
+            16, conv_us, (1, 11, 5), lstm=lstm, attention=False)
+        self.decoder_s = SEDecoder(
+            16, conv_us, (1, 11, 5), lstm=lstm, attention=False)
+        self.decoder_c = SEDecoder(16, conv_us, (1, 11, 5))
 
     def forward(self, x):
         # Combined encoder
-        x = self.conv_ds1(x)
-        x = self.mp1(x)
-        x = self.conv_ds2(x)
-        x = self.mp1(x)
-        x = self.conv_ds3(x)
-        x = self.mp1(x)
-        x = self.conv_ds4(x)
-        x = self.mp1(x)
+        x = self.encoder(x)
 
-        # se network
-        x = self.cse_ds5(x)
+        # Transformers
+        x, _ = self.transformer1(x)
+        x, _ = self.transformer2(x)
+#         x = self.se(x)
+#         x, _ = self.transformer(x)
 
-        # P-arrival Decoder
-        p = self.us1(x)
-        p = self.conv_us_p1(p)
-        p = self.us1(p)
-        p = self.conv_us_p2(p)
-
-        # se network
-        p = self.cse_us_p5(p)
-
-        p = self.us1(p)
-        p = self.conv_us_p3(p)
-        p = self.us1(p)
-        p = self.conv_us_p4(p)
-
-        # S-arrival Decoder
-        s = self.us1(x)
-        s = self.conv_us_s1(s)
-        s = self.us1(s)
-        s = self.conv_us_s2(s)
-
-        # se network
-        s = self.cse_us_s5(s)
-
-        s = self.us1(s)
-        s = self.conv_us_s3(s)
-        s = self.us1(s)
-        s = self.conv_us_s4(s)
-
-        # Coda Decoder
-        c = self.us1(x)
-        c = self.conv_us_c1(c)
-        c = self.us1(c)
-        c = self.conv_us_c2(c)
-
-        # se network
-        c = self.cse_us_c5(c)
-
-        c = self.us1(c)
-        c = self.conv_us_c3(c)
-        c = self.us1(c)
-        c = self.conv_us_c4(c)
+        # Separate decoders
+        p = self.decoder_p(x)
+        s = self.decoder_s(x)
+        c = self.decoder_c(x)
 
         return p, s, c
