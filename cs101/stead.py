@@ -15,11 +15,39 @@ class SquareImpulse(Impulse):
     
     def get_impulse(self, start, end, size):
         impulse = torch.zeros(1, size)
-        impulse[0, start - self.width:end + self.width] = self.magnitude
+        lo = max(start - self.width, 0)
+        hi = min(end + self.width, size - 1)
+        impulse[0, lo:hi] = self.magnitude
         return impulse
     
     def get_index(self, impulse):
         return impulse.squeeze().argmax(1) + self.width
+
+class TriangleImpulse(Impulse):
+    def __init__(self, width, magnitude):
+        self.width = width
+        self.magnitude = magnitude
+    
+    def get_impulse(self, start, end, size):
+        impulse = torch.zeros(1, size)
+        impulse[0, start:end] = self.magnitude
+        for i in range(self.width):
+            lo = max(start - i, 0)
+            hi = min(end + i, size - 1)
+            mag = self.magnitude * (i / self.width)
+            impulse[0, lo] = mag
+            impulse[0, hi] = mag
+        return impulse
+    
+    def get_index(self, impulse):
+        return impulse.squeeze().argmax(1)
+
+
+class Standardizer():
+    def __call__(self, x):
+        std, mean = torch.std_mean(x, dim=-1, keepdim=True)
+        std = torch.where(std == 0, torch.tensor(1.0), std)
+        return (x - mean) / std
 
 class STEADDataset(data.Dataset):
     def __init__(self, csv_file, npy_file, impulse, transform=None, init_data=None):
@@ -57,21 +85,32 @@ class STEADDataset(data.Dataset):
         # Convert to PyTorch tensor
         trace = torch.transpose(torch.from_numpy(trace), 0, 1)
         
-        # Create the p_arrival impulse using the time index
-        p_arrival_idx = int(trace_attrs['p_arrival_sample'])
-        p_impulse = self.impulse.get_impulse(p_arrival_idx, p_arrival_idx, trace.size()[1])
-        
-        s_arrival_idx = int(trace_attrs['s_arrival_sample'])
-        s_impulse = self.impulse.get_impulse(s_arrival_idx, s_arrival_idx, trace.size()[1])
-        
-        coda_end_idx = int(trace_attrs['coda_end_sample'])
-        c_impulse = self.impulse.get_impulse(p_arrival_idx, coda_end_idx, trace.size()[1])
-        
+        is_noise = trace_attrs['trace_category'] == 'noise'
+
+        if is_noise:
+            p_arrival_idx = 0
+            s_arrival_idx = 0
+            coda_end_idx = 0
+
+            p_impulse = torch.zeros(1, trace.size()[1])
+            s_impulse = torch.zeros(1, trace.size()[1])
+            c_impulse = torch.zeros(1, trace.size()[1])
+        else:
+            # Create the p_arrival impulse using the time index
+            p_arrival_idx = int(trace_attrs['p_arrival_sample'])
+            p_impulse = self.impulse.get_impulse(p_arrival_idx, p_arrival_idx, trace.size()[1])
+            
+            s_arrival_idx = int(trace_attrs['s_arrival_sample'])
+            s_impulse = self.impulse.get_impulse(s_arrival_idx, s_arrival_idx, trace.size()[1])
+            
+            coda_end_idx = int(trace_attrs['coda_end_sample'])
+            c_impulse = self.impulse.get_impulse(p_arrival_idx, coda_end_idx, trace.size()[1])
+
         if self.transform:
             trace = self.transform(trace)
-        
-        return trace, (p_impulse, s_impulse, c_impulse)
-    
+
+        return trace, (p_impulse, s_impulse, c_impulse), (p_arrival_idx, s_arrival_idx, coda_end_idx),  is_noise
+
     def filter(self, f):
         self.metadata = self.metadata[f(self.metadata)]
     
@@ -82,11 +121,13 @@ class STEADDataset(data.Dataset):
         indices = np.random.permutation(self.metadata.index) if random else self.metadata.index
         p1 = self.metadata.loc[indices[:count]]
         p2 = self.metadata.loc[indices[count:]]
-        d1 = STEADDataset(None, None, self.impulse, self.transform, init_data=(p1, self.trace_data))
-        d2 = STEADDataset(None, None, self.impulse, self.transform, init_data=(p2, self.trace_data))
+        d1 = STEADDataset(None, None, self.impulse, transform=self.transform, init_data=(
+            p1, self.trace_data))
+        d2 = STEADDataset(None, None, self.impulse, transform=self.transform, init_data=(
+            p2, self.trace_data))
         return (d1, d2)
-    
-    def show(self, idx):
+
+    def show(self, idx, codastyle='-'):
         # Get the trace and its metadata
         trace_attrs, trace = self.__get_trace(idx)
         
@@ -101,21 +142,21 @@ class STEADDataset(data.Dataset):
         
         # Plot the e signal
         ax_e.plot(trace[:,0], color='k')
-        ax_e.axvline(p_time, color='dodgerblue', label='P-Arrival')
-        ax_e.axvline(s_time, color='orangered', label='S-Arrival')
-        ax_e.axvline(c_time, color='green', label='Coda End')
+        ax_e.axvline(p_time, color='dodgerblue', label='P-Arrival', linestyle=codastyle)
+        ax_e.axvline(s_time, color='orangered', label='S-Arrival', linestyle=codastyle)
+        ax_e.axvline(c_time, color='green', label='Coda End', linestyle=codastyle)
         
         # Plot the n signal
         ax_n.plot(trace[:,1], color='k')
-        ax_n.axvline(p_time, color='dodgerblue', label='P-Arrival')
-        ax_n.axvline(s_time, color='orangered', label='S-Arrival')
-        ax_n.axvline(c_time, color='green', label='Coda End')
+        ax_n.axvline(p_time, color='dodgerblue', label='P-Arrival', linestyle=codastyle)
+        ax_n.axvline(s_time, color='orangered', label='S-Arrival', linestyle=codastyle)
+        ax_n.axvline(c_time, color='green', label='Coda End', linestyle=codastyle)
         
         # Plot the z signal
         ax_z.plot(trace[:,1], color='k')
-        ax_z.axvline(p_time, color='dodgerblue', label='P-Arrival')
-        ax_z.axvline(s_time, color='orangered', label='S-Arrival')
-        ax_z.axvline(c_time, color='green', label='Coda End')
+        ax_z.axvline(p_time, color='dodgerblue', label='P-Arrival', linestyle=codastyle)
+        ax_z.axvline(s_time, color='orangered', label='S-Arrival', linestyle=codastyle)
+        ax_z.axvline(c_time, color='green', label='Coda End', linestyle=codastyle)
         
         # Set up the rest of the plot
         handles, labels = ax_e.get_legend_handles_labels()
