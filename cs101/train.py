@@ -21,6 +21,9 @@ from cs101.models.eqtnetwork import EQTNetwork
 from cs101.models.testnet import TestNet
 from cs101.models.senetwork import SENetwork
 
+# Utilities
+from cs101.util import Statistics
+
 # Create a command line argument parser
 parser = argparse.ArgumentParser('Training program.')
 
@@ -52,6 +55,7 @@ args = parser.parse_args()
 
 # Training/Testing Parameters
 IMPULSE_WIDTH = 10  # Impulse width
+PRED_TOLERANCE = 10 # Time error tolerance
 
 # Locations of STEAD Dataset
 NPY_FILE = '/scratch/cs101/STEAD/stead_full.npy'
@@ -129,11 +133,6 @@ scheduler = optim.lr_scheduler.MultiplicativeLR(
     lambda e: 0.1 if e % 20 == 19 else 1
 )
 
-NEG_ONE = torch.tensor(-1).to(device)
-ONE = torch.tensor(1).to(device)
-ZERO_F = torch.tensor(0.0).to(device)
-ONE_F = torch.tensor(1.0).to(device)
-
 # Each iteration is one full pass through the data
 for e in range(args.epochs):
     print(f'Epoch {e}:')
@@ -207,12 +206,11 @@ for e in range(args.epochs):
     writer.add_scalar('Loss/Train', loss_total / len(train_data), e)
 
     loss_total = 0
-    p_acc = 0
-    s_acc = 0
     p_mae = 0
     s_mae = 0
-    recall = 0
-    precision = 0
+    p_stats = Statistics(device=device)
+    s_stats = Statistics(device=device)
+    d_stats = Statistics(device=device)
 
     # Inference only for now
     model.eval()
@@ -241,53 +239,57 @@ for e in range(args.epochs):
             # Compute Accuracy
             p_mags, p_times = p_pred.squeeze().max(1)
             s_mags, s_times = s_pred.squeeze().max(1)
-            detection, _ = c_pred.squeeze().max(1)
-
-            p_pred_times = torch.where(p_mags > THRESHOLD_P, p_times, NEG_ONE)
-            s_pred_times = torch.where(s_mags > THRESHOLD_S, s_times, NEG_ONE)
-            detection_pred = torch.where(
-                detection > THRESHOLD_D, ONE_F, ZERO_F)
-
-            p_abs_err = torch.abs(p_idx - p_pred_times)
-            s_abs_err = torch.abs(s_idx - s_pred_times)
+            d_mags, _ = c_pred.squeeze().max(1)
             
-            # MAE (only for non-noise signals)
-            p_mae += (p_abs_err.float() * ~is_noise).mean()
-            s_mae += (s_abs_err.float() * ~is_noise).mean()
+            # Prediction masks
+            p_pred = p_mags > THRESHOLD_P
+            s_pred = s_mags > THRESHOLD_S
+            detection = d_mags > THRESHOLD_D
 
-            # Accuracy on non-noise traces
-            p_acc += (torch.where(p_abs_err < IMPULSE_WIDTH,
-                                 ONE_F, ZERO_F) * ~is_noise).mean()
-            s_acc += (torch.where(s_abs_err < IMPULSE_WIDTH,
-                                 ONE_F, ZERO_F) * ~is_noise).mean()
+            # Absolute error in the time prediction
+            p_pred_err = torch.abs(p_idx - p_times)
+            s_pred_err = torch.abs(s_idx - s_times)
+
+            # Mask of correct predictions in non-noise traces
+            p_pred_corr = (p_pred_err < PRED_TOLERANCE) * p_pred * ~is_noise
+            s_pred_corr = (s_pred_err < PRED_TOLERANCE) * s_pred * ~is_noise
             
-            # Accuracy on noise traces
-            p_acc += (is_noise * ~(p_pred_times > 0)).float().mean()
-            s_acc += (is_noise * ~(s_pred_times > 0)).float().mean()
-
-            precision += (detection_pred * ~is_noise).float().sum() / \
-                detection_pred.float().sum()
-            recall += (detection_pred * ~is_noise).float().sum() / \
-                ((~is_noise).float()).sum()
+            # Mask of correct prediction of noise traces
+            p_noise_corr = ~p_pred * is_noise
+            s_noise_corr = ~s_pred * is_noise
+            
+            # Mask of correct prediction overall
+            p_corr = p_pred_corr + p_noise_corr
+            s_corr = s_pred_corr + s_noise_corr
+            
+            # Accumulate statistics
+            p_stats.add_corr_actual(p_corr, ~is_noise)
+            s_stats.add_corr_actual(s_corr, ~is_noise)
+            d_stats.add_pred_actual(detection, ~is_noise)
+            
+            p_err_valid = p_pred * ~is_noise
+            p_valid_sum = p_err_valid.float().sum().item()
+            if p_valid_sum == 0:
+                p_valid_sum = 1.0
+            p_mae += (p_pred_err * p_err_valid).float().sum() / p_valid_sum
+                
+            s_err_valid = s_pred * ~is_noise
+            s_valid_sum = s_err_valid.float().sum().item()
+            if s_valid_sum == 0:
+                s_valid_sum = 1.0
+            s_mae += (s_pred_err * s_err_valid).float().sum() / s_valid_sum
     
     loss_total /= len(test_data)
-    p_acc /= len(test_data)
-    s_acc /= len(test_data)
     p_mae /= len(test_data)
     s_mae /= len(test_data)
-    precision /= len(test_data)
-    recall /= len(test_data)
-    f1 = 2.0 * (precision * recall) / (precision + recall)
 
     # Log loss to TensorBoard
     writer.add_scalar('Loss/Test', loss_total, e)
-    writer.add_scalar('Metrics/P-Arrival/Accuracy', p_acc, e)
-    writer.add_scalar('Metrics/S-Arrival/Accuracy', s_acc, e)
-    writer.add_scalar('Metrics/P-Arrival/MAE', p_mae, e)
-    writer.add_scalar('Metrics/S-Arrival/MAE', s_mae, e)
-    writer.add_scalar('Metrics/Detection/Precision', precision, e)
-    writer.add_scalar('Metrics/Detection/Recall', recall, e)
-    writer.add_scalar('Metrics/Detection/F-1', recall, e)
+    writer.add_scalar('P-Arrival/MAE', p_mae, e)
+    writer.add_scalar('S-Arrival/MAE', s_mae, e)
+    p_stats.log(writer, 'P-Arrival', e)
+    s_stats.log(writer, 'S-Arrival', e)
+    d_stats.log(writer, 'Detection', e)
 
     # Save example predictions
     with torch.no_grad():
