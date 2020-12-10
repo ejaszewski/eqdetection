@@ -4,10 +4,11 @@ from cs101.layers.cnn import PoolingCNN, ResidualCNN, UpsampleCNN
 from cs101.layers.rnn import SimpleLSTM
 from cs101.layers.eqt import Transformer, Attention
 from cs101.layers.se import ChannelSE
+from cs101.layers.flows import ActNorm
 
 
 class SEEncoder(nn.Module):
-    def __init__(self, in_channels, conv, res_cnn, lstm, bilstm):
+    def __init__(self, in_channels, conv, res_cnn, lstm, bilstm, nf):
         super(SEEncoder, self).__init__()
 
         self.cnn = nn.ModuleList()
@@ -42,12 +43,25 @@ class SEEncoder(nn.Module):
 
             self.lstm = SimpleLSTM(prev_channels, 16, False)
         else:
-            self.res.append(nn.Linear(prev_channels, 16))
+#             self.res.append(nn.Linear(prev_channels, 16))
             self.bilstm = None
             self.lstm = None
         
+        if nf:
+            self.flows = nn.ModuleList()
+            self.flows.append(ActNorm(dim = [1000,3,6000]))
+        else:
+            self.flows = None
+        
 
     def forward(self, x):
+        if self.flows is not None:
+            m, _, _ = x.shape
+            if m == 1000:
+                log_det = torch.zeros(m)
+                for flow in self.flows:
+                    x, ld = flow.forward(x)
+                
         # Run x through the CNNs
         for layer in self.cnn:
             x = layer(x)
@@ -124,26 +138,27 @@ class SENetwork(nn.Module):
         conv_us=[(96, 3, 1), (96, 5, 3), (32, 5, 3), (32, 7, 4),
                  (16, 7, 3), (16, 9, 4), (8, 11, 5)],
         lstm=False,
-        bilstm=2
+        bilstm=2,
+        nf=False
     ):
         super(SENetwork, self).__init__()
 
         # Universal encoder
-        self.encoder = SEEncoder(3, conv_ds, res_cnn, lstm, bilstm)
+        self.encoder = SEEncoder(3, conv_ds, res_cnn, lstm, bilstm, nf)
 
         # Transformers
         self.transformer1 = Transformer(46, 16)
         self.transformer2 = Transformer(46, 16)
 
-        self.se = ChannelSE(64, 16)
+        self.se = ChannelSE(16, 4)
 #         self.transformer = Transformer(46, 16)
         
 
         # Separate decoders
         self.decoder_p = SEDecoder(
-            16, conv_us, (1, 11, 5), lstm=lstm, attention=False)
+            16, conv_us, (1, 11, 5), lstm=lstm, attention=True)
         self.decoder_s = SEDecoder(
-            16, conv_us, (1, 11, 5), lstm=lstm, attention=False)
+            16, conv_us, (1, 11, 5), lstm=lstm, attention=True)
         self.decoder_c = SEDecoder(16, conv_us, (1, 11, 5))
 
     def forward(self, x):
@@ -151,9 +166,9 @@ class SENetwork(nn.Module):
         x = self.encoder(x)
 
         # Transformers
-        x, _ = self.transformer1(x)
-        x, _ = self.transformer2(x)
-#         x = self.se(x)
+#         x, _ = self.transformer1(x)
+#         x, _ = self.transformer2(x)
+        x = self.se(x)
 #         x, _ = self.transformer(x)
 
         # Separate decoders
