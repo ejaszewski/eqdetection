@@ -20,6 +20,7 @@ from cs101.stead import STEADDataset, SquareImpulse, Standardizer
 from cs101.models.eqtnetwork import EQTNetwork
 from cs101.models.testnet import TestNet
 from cs101.models.senetwork import SENetwork
+from cs101.models.nfnetwork import NFNetwork
 
 # Utilities
 from cs101.util import Statistics
@@ -49,7 +50,7 @@ parser.add_argument('--train_split', default=0.8, type=float,
 parser.add_argument('--examples', default=5, type=int,
                     help='Number of examples to save. Default: 5')
 parser.add_argument('--model', default='EQT', type=str,
-                    help='The model to train. Options: EQT (default), SE, SE_LSTM')
+                    help='The model to train. Options: EQT (default), SE, SE_LSTM, NF')
 
 args = parser.parse_args()
 
@@ -100,6 +101,8 @@ elif args.model == 'SE':
     model = SENetwork().to(device)
 elif args.model == 'SE_LSTM':
     model = SENetwork(lstm=True).to(device)
+elif args.model == 'NF':
+    model = NFNetwork().to(device)
 
 # Initialize criteria (loss) and set weights
 criterion_p = nn.BCEWithLogitsLoss().to(device)
