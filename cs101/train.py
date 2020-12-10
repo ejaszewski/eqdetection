@@ -50,7 +50,7 @@ parser.add_argument('--train_split', default=0.8, type=float,
 parser.add_argument('--examples', default=5, type=int,
                     help='Number of examples to save. Default: 5')
 parser.add_argument('--model', default='EQT', type=str,
-                    help='The model to train. Options: EQT (default), SE, SE_LSTM, NF')
+                    help='The model to train. Options: EQT (default), SE_LSTM, NF, SE_LSTM_NF (full network)')
 
 args = parser.parse_args()
 
@@ -97,12 +97,12 @@ writer = SummaryWriter(os.path.join(args.root, args.run))
 # Initialize the network and move to device
 if args.model == 'EQT':
     model = EQTNetwork().to(device)
-elif args.model == 'SE':
-    model = SENetwork().to(device)
 elif args.model == 'SE_LSTM':
     model = SENetwork(lstm=True).to(device)
 elif args.model == 'NF':
     model = NFNetwork().to(device)
+elif args.model == 'SE_LSTM_NF':
+    model = SENetwork(lstm=True, nf=True).to(device)
 
 # Initialize criteria (loss) and set weights
 criterion_p = nn.BCEWithLogitsLoss().to(device)
