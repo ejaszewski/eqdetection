@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from eqdetection.stead import STEADDataset, SquareImpulse, TriangleImpulse, Standardizer
 from eqdetection.model import Network
 from eqdetection.util import Statistics
-
+from eqdetection.glow import GlowNetwork
 
 # Create a command line argument parser
 parser = argparse.ArgumentParser('Training program.')
@@ -64,7 +64,7 @@ else:
     device = torch.device('cpu')
 
 # Set up the impulse signal
-impulse = SquareImpulse(IMPULSE_WIDTH, 1)
+impulse = TriangleImpulse(IMPULSE_WIDTH, 1)
 
 # Load the dataset
 standardizer = Standardizer()
@@ -88,25 +88,24 @@ test_data = DataLoader(test, batch_size=args.batch, shuffle=True, num_workers=4)
 writer = SummaryWriter(os.path.join(args.root, args.run))
 
 # Initialize the network and move to device
-model = Network().to(device)
+model = GlowNetwork(3, 6, 8).to(device)
+pytorch_total_params = sum(p.numel() for p in model.parameters())
+print('Number of Trainable Params:', pytorch_total_params)
 
 # Initialize criteria (loss) and set weights
 criterion_p = nn.BCEWithLogitsLoss().to(device)
 criterion_s = nn.BCEWithLogitsLoss().to(device)
 criterion_e = nn.BCEWithLogitsLoss().to(device)
-WEIGHT_P = 0.2
-WIEGHT_S = 0.3
-WEIGHT_E = 0.5
+WEIGHT_P = 0.5
+WIEGHT_S = 0.5
+WEIGHT_E = 0.0
 THRESHOLD_D = 0.5
 THRESHOLD_P = 0.3
 THRESHOLD_S = 0.3
 
 # Set up the optimizer and the LR scheduler
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-scheduler = optim.lr_scheduler.MultiplicativeLR(
-    optimizer,
-    lambda e: 0.1 if e % 20 == 19 else 1
-)
+optimizer = optim.Adam(model.parameters(), lr=5e-4)
+scheduler = optim.lr_scheduler.CyclicLR(optimizer, base_lr=5e-4, max_lr=1e-3, step_size_up=4*len(train_data), mode='triangular2', cycle_momentum=False)
 
 # Each iteration is one full pass through the data
 for e in range(args.epochs):
@@ -283,9 +282,6 @@ for e in range(args.epochs):
 
     # Re-enable training
     model.train()
-
-    # Learning rate scheduler
-    scheduler.step()
 
 # Make sure the whole TensorBoard log gets saved
 writer.flush()
