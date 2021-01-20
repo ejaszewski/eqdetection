@@ -15,7 +15,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 # EQDetection Imports
-from eqdetection.stead import STEADDataset, SquareImpulse, Standardizer
+from eqdetection.stead import STEADDataset, SquareImpulse, TriangleImpulse, Standardizer
 from eqdetection.model import Network
 from eqdetection.util import Statistics
 
@@ -69,7 +69,7 @@ impulse = SquareImpulse(IMPULSE_WIDTH, 1)
 # Load the dataset
 standardizer = Standardizer()
 full_dataset = STEADDataset(
-    CSV_FILE, NPY_FILE, impulse, transform=standardizer)
+    CSV_FILE, NPY_FILE, impulse, transform=standardizer, crop=4096)
 
 # Split into train, test, and example sets
 full_size = len(full_dataset)
@@ -138,6 +138,9 @@ for e in range(args.epochs):
         loss.backward()
         optimizer.step()
 
+        # Learning Rate Scheduler
+        scheduler.step()
+
         # Log loss to TensorBoard
         writer.add_scalar('Loss/Batch/Train', loss.item(),
                           e * len(train_data) + idx)
@@ -166,9 +169,12 @@ for e in range(args.epochs):
             e_label = batch['e_impulse'].to(device)
             p_idx = batch['p_idx'].to(device)
             s_idx = batch['s_idx'].to(device)
+            e_idx = batch['e_idx'].to(device)
 
             # Is the signal noise?
-            is_noise = (p_idx < 0) * (s_idx < 0)
+            has_p = p_idx < 0
+            has_s = s_idx < 0
+            has_e = e_idx < 0
 
             # Make predictions
             (p_pred, s_pred, e_pred) = model(trace)
@@ -195,29 +201,29 @@ for e in range(args.epochs):
             s_pred_err = torch.abs(s_idx - s_times)
 
             # Mask of correct predictions in non-noise traces
-            p_pred_corr = (p_pred_err < PRED_TOLERANCE) * p_pred * ~is_noise
-            s_pred_corr = (s_pred_err < PRED_TOLERANCE) * s_pred * ~is_noise
+            p_pred_corr = (p_pred_err < PRED_TOLERANCE) * p_pred * ~has_p
+            s_pred_corr = (s_pred_err < PRED_TOLERANCE) * s_pred * ~has_s
             
             # Mask of correct prediction of noise traces
-            p_noise_corr = ~p_pred * is_noise
-            s_noise_corr = ~s_pred * is_noise
+            p_noise_corr = ~p_pred * has_p
+            s_noise_corr = ~s_pred * has_s
             
             # Mask of correct prediction overall
             p_corr = p_pred_corr + p_noise_corr
             s_corr = s_pred_corr + s_noise_corr
             
             # Accumulate statistics
-            p_stats.add_corr_actual(p_corr, ~is_noise)
-            s_stats.add_corr_actual(s_corr, ~is_noise)
-            d_stats.add_pred_actual(detection, ~is_noise)
+            p_stats.add_corr_actual(p_corr, ~has_p)
+            s_stats.add_corr_actual(s_corr, ~has_s)
+            d_stats.add_pred_actual(detection, ~has_e)
             
-            p_err_valid = p_pred * ~is_noise
+            p_err_valid = p_pred * ~has_p
             p_valid_sum = p_err_valid.float().sum().item()
             if p_valid_sum == 0:
                 p_valid_sum = 1.0
             p_mae += (p_pred_err * p_err_valid).float().sum() / p_valid_sum
                 
-            s_err_valid = s_pred * ~is_noise
+            s_err_valid = s_pred * ~has_s
             s_valid_sum = s_err_valid.float().sum().item()
             if s_valid_sum == 0:
                 s_valid_sum = 1.0

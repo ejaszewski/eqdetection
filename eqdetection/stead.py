@@ -1,12 +1,15 @@
+import random
+import torch
 import torch.utils.data as data
 import pandas as pd
 import numpy as np
-import torch
 import matplotlib.pyplot as plt
+
 
 class Impulse:
     def get_impulse(self, start, end, size):
         return torch.zeros(1, size)
+
 
 class SquareImpulse(Impulse):
     def __init__(self, width, magnitude):
@@ -19,9 +22,7 @@ class SquareImpulse(Impulse):
         hi = min(end + self.width, size - 1)
         impulse[0, lo:hi] = self.magnitude
         return impulse
-    
-    def get_index(self, impulse):
-        return impulse.squeeze().argmax(1) + self.width
+        
 
 class TriangleImpulse(Impulse):
     def __init__(self, width, magnitude):
@@ -38,9 +39,6 @@ class TriangleImpulse(Impulse):
             impulse[0, lo] = mag
             impulse[0, hi] = mag
         return impulse
-    
-    def get_index(self, impulse):
-        return impulse.squeeze().argmax(1)
 
 
 class Standardizer():
@@ -49,8 +47,9 @@ class Standardizer():
         std = torch.where(std == 0, torch.tensor(1.0), std)
         return (x - mean) / std
 
+
 class STEADDataset(data.Dataset):
-    def __init__(self, csv_file, npy_file, impulse, transform=None, init_data=None):
+    def __init__(self, csv_file, npy_file, impulse, transform=None, init_data=None, crop=None):
         if init_data != None: # Create a dataset with pre-loaded data
             self.metadata = init_data[0]
             self.trace_data = init_data[1]
@@ -64,6 +63,7 @@ class STEADDataset(data.Dataset):
         
         self.impulse = impulse
         self.transform = transform
+        self.crop = crop
     
     def __len__(self):
         return len(self.metadata)
@@ -84,6 +84,7 @@ class STEADDataset(data.Dataset):
         
         # Convert to PyTorch tensor
         trace = torch.transpose(torch.from_numpy(trace), 0, 1)
+        length = trace.size()[1]
         
         is_noise = trace_attrs['trace_category'] == 'noise'
 
@@ -92,19 +93,38 @@ class STEADDataset(data.Dataset):
             s_arrival_idx = -1
             end_idx = -1
 
-            p_impulse = torch.zeros(1, trace.size()[1])
-            s_impulse = torch.zeros(1, trace.size()[1])
-            end_impulse = torch.zeros(1, trace.size()[1])
+            p_impulse = torch.zeros(1, length)
+            s_impulse = torch.zeros(1, length)
+            end_impulse = torch.zeros(1, length)
         else:
             # Create the p_arrival impulse using the time index
             p_arrival_idx = int(trace_attrs['p_arrival_sample'])
-            p_impulse = self.impulse.get_impulse(p_arrival_idx, p_arrival_idx, trace.size()[1])
+            p_impulse = self.impulse.get_impulse(p_arrival_idx, p_arrival_idx, length)
             
             s_arrival_idx = int(trace_attrs['s_arrival_sample'])
-            s_impulse = self.impulse.get_impulse(s_arrival_idx, s_arrival_idx, trace.size()[1])
+            s_impulse = self.impulse.get_impulse(s_arrival_idx, s_arrival_idx, length)
             
             end_idx = int(trace_attrs['coda_end_sample'])
-            end_impulse = self.impulse.get_impulse(p_arrival_idx, end_idx, trace.size()[1])
+            end_impulse = self.impulse.get_impulse(p_arrival_idx, end_idx, length)
+
+        if self.crop is not None:
+            crop_start = random.randint(0, length - self.crop)
+            crop_end = crop_start + self.crop
+
+            trace = trace.narrow(1, crop_start, self.crop)
+
+            p_impulse = p_impulse.narrow(1, crop_start, self.crop)
+            s_impulse = s_impulse.narrow(1, crop_start, self.crop)
+            end_impulse = end_impulse.narrow(1, crop_start, self.crop)
+
+            if p_arrival_idx < crop_start or p_arrival_idx >= crop_end:
+                p_arrival_idx = -1
+            
+            if s_arrival_idx < crop_start or s_arrival_idx >= crop_end:
+                s_arrival_idx = -1
+
+            if end_idx < crop_start or end_idx >= crop_end:
+                end_idx = -1
 
         if self.transform:
             trace = self.transform(trace)
