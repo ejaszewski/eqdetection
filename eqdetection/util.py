@@ -17,8 +17,8 @@ class Statistics():
 
     def add_corr_actual(self, corr, actual):
         true_pos = corr * actual
-        false_pos = ~corr * actual
-        false_neg = ~corr * ~actual
+        false_pos = ~corr * ~actual
+        false_neg = ~corr * actual
 
         self.true_pos += true_pos.sum()
         self.false_pos += false_pos.sum()
