@@ -119,12 +119,18 @@ class STEADDataset(data.Dataset):
 
             if p_arrival_idx < crop_start or p_arrival_idx >= crop_end:
                 p_arrival_idx = -1
+            else:
+                p_arrival_idx -= crop_start
             
             if s_arrival_idx < crop_start or s_arrival_idx >= crop_end:
                 s_arrival_idx = -1
+            else:
+                s_arrival_idx -= crop_start
 
             if end_idx < crop_start or end_idx >= crop_end:
                 end_idx = -1
+            else:
+                end_idx -= crop_start
 
         if self.transform:
             trace = self.transform(trace)
