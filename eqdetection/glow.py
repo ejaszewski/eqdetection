@@ -62,8 +62,10 @@ class Downsampler(nn.Module):
         self.conv1 = nn.Conv1d(in_channels, out_channels, 3, 1, 1)
         self.activation1 = nn.ReLU()
 
-        self.conv2 = nn.Conv1d(out_channels, out_channels, 3, 2, 1)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, 3, 1, 1)
         self.activation2 = nn.ReLU()
+
+        self.pool = nn.MaxPool1d(3, 2, 1)
     
     def forward(self, x):
         x = self.conv1(x)
@@ -72,13 +74,17 @@ class Downsampler(nn.Module):
         x = self.conv2(x)
         x = self.activation2(x)
 
+        x = self.pool(x)
+
         return x
 
 class Upsampler(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Upsampler, self).__init__()
 
-        self.conv1 = nn.ConvTranspose1d(in_channels, out_channels, 3, 2, 1, output_padding=1)
+        self.upsample = nn.Upsample(scale_factor=2)
+
+        self.conv1 = nn.Conv1d(in_channels, out_channels, 3, 1, 1)
         self.activation1 = nn.ReLU()
 
         self.conv2 = nn.Conv1d(out_channels, out_channels, 3, 1, 1)
@@ -86,6 +92,8 @@ class Upsampler(nn.Module):
     
     
     def forward(self, x):
+        x = self.upsample(x)
+        
         x = self.conv1(x)
         x = self.activation1(x)
         
@@ -109,12 +117,16 @@ class GlowNetwork(nn.Module):
 
         channels = in_channels
         for _ in range(levels):
-            self.dsample.append(Downsampler(channels, channels * 2))
-            self.flows.append(GlowFlow(channels * 2, blocks))
-            self.decoder_p.append(Upsampler(channels * 2, channels))
-            self.decoder_s.append(Upsampler(channels * 2, channels))
-            self.decoder_e.append(Upsampler(channels * 2, channels))
-            channels *= 2
+            out_channels = int(channels * 1.5)
+            out_channels -= out_channels % 2
+
+            self.dsample.append(Downsampler(channels, out_channels))
+            self.flows.append(GlowFlow(out_channels, blocks))
+            self.decoder_p.append(Upsampler(out_channels, channels))
+            self.decoder_s.append(Upsampler(out_channels, channels))
+            self.decoder_e.append(Upsampler(out_channels, channels))
+
+            channels = out_channels
         
         self.decoder_p.append(nn.Conv1d(3, 1, 3, 1, 1))
         self.decoder_s.append(nn.Conv1d(3, 1, 3, 1, 1))

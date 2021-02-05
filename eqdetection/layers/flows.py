@@ -11,8 +11,13 @@ class ActNorm1d(nn.Module):
         self.shift = nn.Parameter(torch.zeros((1, channels, 1)))
 
     def forward(self, x):
-        x = self.scale * x + self.shift
+        y = self.scale * x + self.shift
+        return y
+
+    def reverse(self, y):
+        x = (y - self.shift) / self.scale
         return x
+
 
 class InvertibleConv1d(nn.Module):
     def __init__(self, channels):
@@ -22,8 +27,13 @@ class InvertibleConv1d(nn.Module):
         nn.init.orthogonal_(self.w)
     
     def forward(self, x):
-        x = nn.functional.conv1d(x, self.w)
+        y = nn.functional.conv1d(x, self.w)
+        return y
+
+    def reverse(self, y):
+        x = nn.functional.conv1d(y, self.w.reverse())
         return x
+
 
 class AffineCoupling1d(nn.Module):
     def __init__(self, inner):
@@ -35,13 +45,26 @@ class AffineCoupling1d(nn.Module):
         x_a, x_b = x.chunk(2, 1)
         
         log_s, t = self.inner(x_b).chunk(2, 1)
-        s = torch.sigmoid(log_s)
+        s = torch.sigmoid(log_s + 2)
         
         y_a = s * x_a + t
         y_b = x_b
         y = torch.cat((y_a, y_b), dim=1)
 
         return y
+
+    def reverse(self, y):
+        y_a, y_b = y.chunk(2, 1)
+        
+        log_s, t = self.inner(y_b).chunk(2, 1)
+        s = torch.sigmoid(log_s)
+        
+        x_a = (y_a - t) / s
+        x_b = y_b
+        x = torch.cat((x_a, x_b), dim=1)
+
+        return x
+
 
 class GlowBlock(nn.Module):
     def __init__(self, channels, inner):
@@ -56,3 +79,9 @@ class GlowBlock(nn.Module):
         x = self.conv1x1(x)
         x = self.coupling(x)
         return x
+
+    def reverse(self, y):
+        y = self.coupling.reverse(y)
+        y = self.conv1x1.reverse(y)
+        y = self.act_norm.reverse(y)
+        return y

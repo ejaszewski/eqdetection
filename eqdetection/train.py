@@ -64,12 +64,12 @@ else:
     device = torch.device('cpu')
 
 # Set up the impulse signal
-impulse = TriangleImpulse(IMPULSE_WIDTH, 1)
+impulse = SquareImpulse(IMPULSE_WIDTH, 1)
 
 # Load the dataset
 standardizer = Standardizer()
 full_dataset = STEADDataset(
-    CSV_FILE, NPY_FILE, impulse, transform=standardizer, crop=4096)
+    CSV_FILE, NPY_FILE, impulse, transform=standardizer, crop=3072)
 
 # Split into train, test, and example sets
 full_size = len(full_dataset)
@@ -88,17 +88,17 @@ test_data = DataLoader(test, batch_size=args.batch, shuffle=True, num_workers=4)
 writer = SummaryWriter(os.path.join(args.root, args.run))
 
 # Initialize the network and move to device
-model = GlowNetwork(3, 6, 8).to(device)
+model = GlowNetwork(3, 6, 12).to(device)
 pytorch_total_params = sum(p.numel() for p in model.parameters())
 print('Number of Trainable Params:', pytorch_total_params)
 
 # Initialize criteria (loss) and set weights
-criterion_p = nn.BCEWithLogitsLoss().to(device)
-criterion_s = nn.BCEWithLogitsLoss().to(device)
+criterion_p = nn.BCEWithLogitsLoss(pos_weight=torch.ones(3072)).to(device)
+criterion_s = nn.BCEWithLogitsLoss(pos_weight=torch.ones(3072)).to(device)
 criterion_e = nn.BCEWithLogitsLoss().to(device)
 WEIGHT_P = 0.5
 WIEGHT_S = 0.5
-WEIGHT_E = 0.0
+WEIGHT_E = 0
 THRESHOLD_D = 0.5
 THRESHOLD_P = 0.3
 THRESHOLD_S = 0.3
@@ -171,9 +171,9 @@ for e in range(args.epochs):
             e_idx = batch['e_idx'].to(device)
 
             # Is the signal noise?
-            has_p = p_idx < 0
-            has_s = s_idx < 0
-            has_e = e_idx < 0
+            no_p = p_idx < 0
+            no_s = s_idx < 0
+            no_s = e_idx < 0
 
             # Make predictions
             (p_pred, s_pred, e_pred) = model(trace)
@@ -186,9 +186,9 @@ for e in range(args.epochs):
             loss_total += loss.item()
 
             # Compute Accuracy
-            p_mags, p_times = p_pred.squeeze().max(1)
-            s_mags, s_times = s_pred.squeeze().max(1)
-            d_mags, _ = e_pred.squeeze().max(1)
+            p_mags, p_times = torch.sigmoid(p_pred).squeeze().max(1)
+            s_mags, s_times = torch.sigmoid(s_pred).squeeze().max(1)
+            d_mags, _ = torch.sigmoid(e_pred).squeeze().max(1)
             
             # Prediction masks
             p_pred = p_mags > THRESHOLD_P
@@ -200,29 +200,29 @@ for e in range(args.epochs):
             s_pred_err = torch.abs(s_idx - s_times)
 
             # Mask of correct predictions in non-noise traces
-            p_pred_corr = (p_pred_err < PRED_TOLERANCE) * p_pred * ~has_p
-            s_pred_corr = (s_pred_err < PRED_TOLERANCE) * s_pred * ~has_s
+            p_pred_corr = (p_pred_err < PRED_TOLERANCE) * p_pred * ~no_p
+            s_pred_corr = (s_pred_err < PRED_TOLERANCE) * s_pred * ~no_s
             
             # Mask of correct prediction of noise traces
-            p_noise_corr = ~p_pred * has_p
-            s_noise_corr = ~s_pred * has_s
+            p_noise_corr = ~p_pred * no_p
+            s_noise_corr = ~s_pred * no_s
             
             # Mask of correct prediction overall
             p_corr = p_pred_corr + p_noise_corr
             s_corr = s_pred_corr + s_noise_corr
             
             # Accumulate statistics
-            p_stats.add_corr_actual(p_corr, ~has_p)
-            s_stats.add_corr_actual(s_corr, ~has_s)
-            d_stats.add_pred_actual(detection, ~has_e)
+            p_stats.add_corr_actual(p_corr, ~no_p)
+            s_stats.add_corr_actual(s_corr, ~no_s)
+            d_stats.add_pred_actual(detection, ~no_s)
             
-            p_err_valid = p_pred * ~has_p
+            p_err_valid = p_pred * ~no_p
             p_valid_sum = p_err_valid.float().sum().item()
             if p_valid_sum == 0:
                 p_valid_sum = 1.0
             p_mae += (p_pred_err * p_err_valid).float().sum() / p_valid_sum
                 
-            s_err_valid = s_pred * ~has_s
+            s_err_valid = s_pred * ~no_s
             s_valid_sum = s_err_valid.float().sum().item()
             if s_valid_sum == 0:
                 s_valid_sum = 1.0
@@ -264,9 +264,14 @@ for e in range(args.epochs):
                 scaling = 0.9 * (y_max - y_min)
                 shift = 0.9 * y_min
 
-                ax.axvline(example['p_idx'], color='dodgerblue', label='P-Arrival', linestyle=':')
-                ax.axvline(example['s_idx'], color='orangered', label='S-Arrival', linestyle=':')
-                ax.axvline(example['e_idx'], color='green', label='Coda End', linestyle=':')
+                if example['p_idx'] > 0:
+                    ax.axvline(example['p_idx'], color='dodgerblue', label='P-Arrival', linestyle=':')
+                
+                if example['s_idx'] > 0:
+                    ax.axvline(example['s_idx'], color='orangered', label='S-Arrival', linestyle=':')
+                
+                if example['e_idx'] > 0:
+                    ax.axvline(example['e_idx'], color='green', label='Coda End', linestyle=':')
 
                 ax.plot(scaling * p_pred + shift, color='deepskyblue',
                         label='Predicted P-Arrival')
