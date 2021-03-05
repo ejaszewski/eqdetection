@@ -1,3 +1,4 @@
+import math
 import random
 import torch
 import torch.utils.data as data
@@ -10,6 +11,14 @@ class Impulse:
     def get_impulse(self, start, end, size):
         return torch.zeros(1, size)
 
+class SpikeImpulse(Impulse):
+    def __init__(self, magnitude):
+        self.magnitude = magnitude
+
+    def get_impulse(self, start, end, size):
+        impulse = torch.zeros(1, size)
+        impulse[0, start] = self.magnitude
+        return impulse
 
 class SquareImpulse(Impulse):
     def __init__(self, width, magnitude):
@@ -35,11 +44,30 @@ class TriangleImpulse(Impulse):
         for i in range(self.width):
             lo = max(start - i, 0)
             hi = min(end + i, size - 1)
-            mag = self.magnitude * (i / self.width)
+            mag = self.magnitude * (1.0 - (i / self.width))
             impulse[0, lo] = mag
             impulse[0, hi] = mag
         return impulse
 
+class ProbSquareImpulse(Impulse):
+    def __init__(self, width, scale):
+        self.sigma = width / math.sqrt(2 * math.pi)
+        self.scale = scale
+    
+    def get_impulse(self, start, end, size):
+        idxs = torch.arange(size).unsqueeze(0)
+        probs = (-0.5 * ((idxs - start) / self.sigma).pow(2)).exp()
+        return torch.bernoulli(probs) * self.scale
+
+class NoisyImpulse(Impulse):
+    def __init__(self, impulse, noise):
+        self.impulse = impulse
+        self.noise = noise
+    
+    def get_impulse(self, start, end, size):
+        impulse = self.impulse.get_impulse(start, end, size)
+        impulse += self.noise * torch.randn(1, size)
+        return impulse
 
 class Standardizer():
     def __call__(self, x):
@@ -49,7 +77,7 @@ class Standardizer():
 
 
 class STEADDataset(data.Dataset):
-    def __init__(self, csv_file, npy_file, impulse, transform=None, init_data=None, crop=None):
+    def __init__(self, csv_file, npy_file, impulse, transform=None, init_data=None, crop=None, impulse_noise=0.0):
         if init_data != None: # Create a dataset with pre-loaded data
             self.metadata = init_data[0]
             self.trace_data = init_data[1]
@@ -76,7 +104,7 @@ class STEADDataset(data.Dataset):
         # Get the trace from the numpy file by name
         trace = self.trace_data[trace_index]
         
-        return trace_attrs, trace
+        return trace_attrs, trace.copy()
     
     def __getitem__(self, idx):
         # Get the trace and its metadata
@@ -109,6 +137,10 @@ class STEADDataset(data.Dataset):
 
         if self.crop is not None:
             crop_start = random.randint(0, length - self.crop)
+            
+            if p_arrival_idx > 0:
+                crop_start = p_arrival_idx - random.randint(0, min(p_arrival_idx, self.crop))
+
             crop_end = crop_start + self.crop
 
             trace = trace.narrow(1, crop_start, self.crop)
