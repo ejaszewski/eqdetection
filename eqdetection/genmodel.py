@@ -131,6 +131,8 @@ class ParallelModel(nn.Module):
 
         self.flow = nn.ModuleList()
 
+        self.length = length
+
         mask = torch.arange(length) % 2
         
         for _ in range(blocks):
@@ -158,3 +160,12 @@ class ParallelModel(nn.Module):
             log_det += layer_log_det
         
         return z, log_det
+
+    def infer(self, y, count, prior):
+        y = self.cond(y).repeat(count, 1, 1)
+        z = prior.sample((count, self.length)).transpose(1, 2).squeeze(dim=-1)
+
+        for flow in reversed(self.flow):
+            z, _ = flow.reverse(z, y)
+        
+        return z

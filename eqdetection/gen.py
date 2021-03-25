@@ -49,7 +49,7 @@ parser.add_argument('--examples', default=5, type=int,
 args = parser.parse_args()
 
 # Training/Testing Parameters
-IMPULSE_WIDTH = 2  # Impulse width
+IMPULSE_WIDTH = 10  # Impulse width
 PRED_TOLERANCE = 10  # Time error tolerance
 
 # Locations of STEAD Dataset
@@ -69,8 +69,8 @@ impulse = NoisyImpulse(SquareImpulse(IMPULSE_WIDTH, 1.0), 0.05)
 # Load the dataset
 standardizer = Standardizer()
 full_dataset = STEADDataset(
-    CSV_FILE, NPY_FILE, impulse, transform=standardizer, crop=512)
-full_dataset.filter(lambda df: df['trace_category'] == 'earthquake_local')
+    CSV_FILE, NPY_FILE, impulse, transform=standardizer, crop=1024)
+# full_dataset.filter(lambda df: df['trace_category'] == 'earthquake_local')
 
 # Split into train, test, and example sets
 torch.manual_seed(42)
@@ -90,9 +90,9 @@ test_data = DataLoader(test, batch_size=args.batch, shuffle=True, num_workers=4)
 # TensorBoard writer
 writer = SummaryWriter(os.path.join(args.root, args.run))
 
-model = ParallelModel(16, 512).to(device)
+model = ParallelModel(16, 1024).to(device)
 # prior = distributions.MultivariateNormal(torch.zeros(1).to(device), torch.eye(1).to(device))
-prior = distributions.ContinuousBernoulli(torch.tensor([0.5]).to(device))
+prior = distributions.Cauchy(torch.zeros(1).to(device), torch.eye(1).to(device))
 optimizer = optim.Adam(model.parameters(), lr=1e-5)
 
 pytorch_total_params = sum(p.numel() for p in model.parameters())
@@ -140,8 +140,9 @@ for e in range(args.epochs):
             trace = example['trace'].unsqueeze(0).to(device) # ith trace
             impulse = example['p_impulse'].unsqueeze(0).to(device)
 
-            sample = prior.sample((1000, 512)).transpose(1, 2)
-            estimation, _ = model.reverse(sample, trace.repeat(1000, 1, 1))
+            sample = prior.sample((200, 1024)).transpose(1, 2).squeeze(dim=-1)
+            print(sample.shape)
+            estimation, _ = model.reverse(sample, trace.repeat(200, 1, 1))
 
             # Create a trace plot
             fig, axes = plt.subplots(nrows=2, sharex=True)
@@ -153,11 +154,11 @@ for e in range(args.epochs):
             emax = 2
             emin = -1
             bins = 50
-            hist = torch.zeros(512, bins)
-            for t in range(512):
+            hist = torch.zeros(1024, bins)
+            for t in range(1024):
                 hist[t] = estimation[:, :, t].histc(bins=bins, min=emin, max=emax)
 
-            axes[1].pcolormesh(torch.arange(512), torch.linspace(emin, emax, bins), hist.T, shading='nearest')
+            axes[1].pcolormesh(torch.arange(1024), torch.linspace(emin, emax, bins), hist.T, shading='nearest')
 
             if example['p_idx'] > 0:
                 axes[0].axvline(example['p_idx'], color='dodgerblue', label='P-Arrival', linestyle=':')
