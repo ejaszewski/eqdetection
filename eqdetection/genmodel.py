@@ -18,12 +18,35 @@ class CouplingNetwork(nn.Module):
         
         return x
 
+class InvertibleSigmoid(nn.Module):
+    def __init__(self):
+        super(InvertibleSigmoid, self).__init__()
+
+    def _f(x):
+        return 1 / (1 + (-x).exp())
+    
+    def _finv(x):
+        return -(1 / x - 1).log()
+
+    def _df(x):
+        enx = (-x).exp()
+        return enx / (enx + 1).square()
+
+    def _dfinv(x):
+        return 1 / (x - x.square())
+    
+    def forward(self, x):
+        return InvertibleSigmoid._f(x), InvertibleSigmoid._df(x).sum(1)
+
+    def reverse(self, z):
+        return InvertibleSigmoid._finv(z), InvertibleSigmoid._dfinv(z).sum(1)
+
 class ConditionalAffineCoupling(nn.Module):
     def __init__(self, mask):
         super(ConditionalAffineCoupling, self).__init__()
         
-        self.s = CouplingNetwork(5, 1, 128)
-        self.t = CouplingNetwork(5, 1, 128)
+        self.s = CouplingNetwork(6, 1, 128)
+        self.t = CouplingNetwork(6, 1, 128)
         
         self.mask = nn.Parameter(mask, requires_grad=False)
     
@@ -124,25 +147,31 @@ class ConditioningNetwork(nn.Module):
         return x
 
 class ParallelModel(nn.Module):
-    def __init__(self, blocks, length):
+    def __init__(self, blocks, length, sigmoid=False):
         super(ParallelModel, self).__init__()
 
         self.cond = ConditioningNetwork()
 
+        if sigmoid:
+            self.sig = InvertibleSigmoid()
+        else:
+            self.sig = None
+
         self.flow = nn.ModuleList()
 
-        self.length = length
-
-        mask = torch.arange(length) % 2
+        mask = torch.arange(2 * length).reshape(2, length) % 2
         
         for _ in range(blocks):
             self.flow.append(ConditionalAffineCoupling(mask))
             mask = mask.roll(1)
     
     def forward(self, x, y):
-        log_det = 0
-
         y = self.cond(y)
+
+        if self.sig is not None:
+            x, log_det = self.sig.reverse(x)
+        else:
+            log_det = 0
 
         for flow in self.flow:
             x, layer_log_det = flow(x, y)
@@ -151,14 +180,18 @@ class ParallelModel(nn.Module):
         return x, log_det
     
     def reverse(self, z, y):
-        log_det = 0
-
         y = self.cond(y)
+
+        log_det = 0
 
         for flow in reversed(self.flow):
             z, layer_log_det = flow.reverse(z, y)
             log_det += layer_log_det
         
+        if self.sig is not None:
+            z, sig_log_det = self.sig(z)
+            log_det += sig_log_det
+
         return z, log_det
 
     def infer(self, y, count, prior):
@@ -167,5 +200,8 @@ class ParallelModel(nn.Module):
 
         for flow in reversed(self.flow):
             z, _ = flow.reverse(z, y)
+
+        if self.sig is not None:
+            z, _ = self.sig(z)
         
         return z

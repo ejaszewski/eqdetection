@@ -16,7 +16,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 # EQDetection Imports
-from eqdetection.stead import STEADDataset, ProbSquareImpulse, SquareImpulse, SpikeImpulse, TriangleImpulse, NoisyImpulse, Standardizer
+from eqdetection.stead import STEADDataset, ProbSquareImpulse, SquareImpulse, SpikeImpulse, TriangleImpulse, NoisyImpulse, Standardizer, BoundedNoisyImpulse
 from eqdetection.util import Statistics
 from eqdetection.genmodel import ParallelModel
 
@@ -64,13 +64,13 @@ else:
     device = torch.device('cpu')
 
 # Set up the impulse signal
-impulse = NoisyImpulse(SquareImpulse(IMPULSE_WIDTH, 1.0), 0.05)
+impulse = NoisyImpulse(SpikeImpulse(1.0), 0.05)
 
 # Load the dataset
 standardizer = Standardizer()
 full_dataset = STEADDataset(
-    CSV_FILE, NPY_FILE, impulse, transform=standardizer, crop=1024)
-# full_dataset.filter(lambda df: df['trace_category'] == 'earthquake_local')
+    CSV_FILE, NPY_FILE, impulse, transform=standardizer, crop=1024, p_uncertainty=5.0, s_uncertainty=8.0)
+full_dataset.filter(lambda df: df['trace_category'] == 'earthquake_local')
 
 # Split into train, test, and example sets
 torch.manual_seed(42)
@@ -91,9 +91,9 @@ test_data = DataLoader(test, batch_size=args.batch, shuffle=True, num_workers=4)
 writer = SummaryWriter(os.path.join(args.root, args.run))
 
 model = ParallelModel(16, 1024).to(device)
-# prior = distributions.MultivariateNormal(torch.zeros(1).to(device), torch.eye(1).to(device))
-prior = distributions.Cauchy(torch.zeros(1).to(device), torch.eye(1).to(device))
-optimizer = optim.Adam(model.parameters(), lr=1e-5)
+prior = distributions.MultivariateNormal(torch.zeros(2).to(device), torch.eye(2).to(device))
+optimizer = optim.SGD(model.parameters(), lr=0.5e-5, momentum=0.9, nesterov=True)
+lr_sched = optim.lr_scheduler.CyclicLR(optimizer, base_lr=0.5e-5, max_lr=2e-5, mode='triangular2', step_size_up=4 * len(train_data))
 
 pytorch_total_params = sum(p.numel() for p in model.parameters())
 print('Number of Trainable Params:', pytorch_total_params)
@@ -107,22 +107,36 @@ for e in range(args.epochs):
     for idx, batch in enumerate(tqdm(train_data)):
         # Get inputs and labels, and move them to device
         trace = batch['trace'].to(device)
-        p_label = batch['p_impulse'].to(device)
+        p_label = batch['p_impulse']
+        s_label = batch['s_impulse']
+        label = torch.hstack((p_label, s_label)).to(device)
 
         # Zero gradients
         optimizer.zero_grad()
 
         # Run through the forward pass
-        z, log_det = model(p_label, trace)
+        z, log_det = model(label, trace)
 
         log_prob = prior.log_prob(z.transpose(1,2)).squeeze()
 
+        # Backwards pass for expected value term
+        # sample = prior.sample((z.shape[0], 1024)).transpose(1, 2).squeeze(dim=-1)
+        # x, _ = model.reverse(sample, trace)
+
+        # Calculate expected value term || E[Sum[x]] - 1 ||^2
+        # ev_mse = (x.sum(dim=2) - 1.0).square().mean().clamp(max=100)
+
+        prob = (0.0 - log_det - log_prob).mean()
+
         # Calculate loss
-        loss = -(log_det + log_prob).mean()
+        loss = prob
 
         # Optimizer step
         loss.backward()
         optimizer.step()
+
+        # LR scheduler step
+        lr_sched.step()
 
         # Log loss to TensorBoard
         writer.add_scalar('Loss/Batch/Train', loss.item(),
@@ -138,14 +152,16 @@ for e in range(args.epochs):
             # Make predictions for the ith trace.
             example = examples[i]
             trace = example['trace'].unsqueeze(0).to(device) # ith trace
-            impulse = example['p_impulse'].unsqueeze(0).to(device)
+            p_impulse = example['p_impulse'].unsqueeze(0)
+            s_impulse = example['s_impulse'].unsqueeze(0)
+            impulse = torch.hstack((p_impulse, s_impulse)).to(device)
 
             sample = prior.sample((200, 1024)).transpose(1, 2).squeeze(dim=-1)
-            print(sample.shape)
+
             estimation, _ = model.reverse(sample, trace.repeat(200, 1, 1))
 
             # Create a trace plot
-            fig, axes = plt.subplots(nrows=2, sharex=True)
+            fig, axes = plt.subplots(nrows=3, sharex=True)
 
             # Plot the trace
             axes[0].plot(example['trace'][0], color='k')
@@ -154,15 +170,23 @@ for e in range(args.epochs):
             emax = 2
             emin = -1
             bins = 50
-            hist = torch.zeros(1024, bins)
-            for t in range(1024):
-                hist[t] = estimation[:, :, t].histc(bins=bins, min=emin, max=emax)
 
-            axes[1].pcolormesh(torch.arange(1024), torch.linspace(emin, emax, bins), hist.T, shading='nearest')
+            def density(channel):
+                hist = torch.zeros(1024, bins)
+                for t in range(1024):
+                    hist[t] = estimation[:, channel, t].histc(bins=bins, min=emin, max=emax)
+                return hist
+
+            axes[1].pcolormesh(torch.arange(1024), torch.linspace(emin, emax, bins), density(0).T, shading='nearest')
+            axes[2].pcolormesh(torch.arange(1024), torch.linspace(emin, emax, bins), density(1).T, shading='nearest')
 
             if example['p_idx'] > 0:
-                axes[0].axvline(example['p_idx'], color='dodgerblue', label='P-Arrival', linestyle=':')
-                axes[1].axvline(example['p_idx'], color='dodgerblue', label='P-Arrival', linestyle=':')
+                for i in range(3):
+                    axes[i].axvline(example['p_idx'], color='dodgerblue', label='P-Arrival', linestyle=':')
+            
+            if example['s_idx'] > 0:
+                for i in range(3):
+                    axes[i].axvline(example['s_idx'], color='orangered', label='S-Arrival', linestyle=':')
 
             handles, labels = axes[0].get_legend_handles_labels()
             fig.legend(handles, labels, loc='center right')
@@ -186,7 +210,7 @@ for e in range(args.epochs):
     model.train()
 
     # Save a model checkpoint
-    if e % 8 == 7:
+    if e % 20 == 19:
         torch.save(model.state_dict(), f'{args.run}_e{e}')
 
 # Make sure the whole TensorBoard log gets saved

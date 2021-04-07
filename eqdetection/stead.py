@@ -69,6 +69,16 @@ class NoisyImpulse(Impulse):
         impulse += self.noise * torch.randn(1, size)
         return impulse
 
+class BoundedNoisyImpulse(Impulse):
+    def __init__(self, impulse, noise):
+        self.impulse = impulse
+        self.noise = noise
+
+    def get_impulse(self, start, end, size):
+        impulse = self.impulse.get_impulse(start, end, size)
+        impulse += (1 - impulse * 2) * self.noise * torch.randn(1, size).abs()
+        return 0.95 * impulse + 0.025
+
 class Standardizer():
     def __call__(self, x):
         std, mean = torch.std_mean(x, dim=-1, keepdim=True)
@@ -77,7 +87,7 @@ class Standardizer():
 
 
 class STEADDataset(data.Dataset):
-    def __init__(self, csv_file, npy_file, impulse, transform=None, init_data=None, crop=None, impulse_noise=0.0):
+    def __init__(self, csv_file, npy_file, impulse, transform=None, init_data=None, crop=None, p_uncertainty=0, s_uncertainty=0):
         if init_data != None: # Create a dataset with pre-loaded data
             self.metadata = init_data[0]
             self.trace_data = init_data[1]
@@ -92,6 +102,8 @@ class STEADDataset(data.Dataset):
         self.impulse = impulse
         self.transform = transform
         self.crop = crop
+        self.p_uncertainty = p_uncertainty
+        self.s_uncertainty = s_uncertainty
     
     def __len__(self):
         return len(self.metadata)
@@ -125,21 +137,45 @@ class STEADDataset(data.Dataset):
             s_impulse = torch.zeros(1, length)
             end_impulse = torch.zeros(1, length)
         else:
+            # Perturb p-arrival by uncertainty in measurement
+            p_perturb = 0
+            if self.p_uncertainty > 0:
+                p_perturb = int(torch.normal(torch.zeros(1), self.p_uncertainty).item())
+
+            # Perturb s-arrival by uncertainty in measurement
+            s_perturb = 0
+            if self.s_uncertainty > 0:
+                s_perturb = int(torch.normal(torch.zeros(1), self.s_uncertainty).item())
+
             # Create the p_arrival impulse using the time index
-            p_arrival_idx = int(trace_attrs['p_arrival_sample'])
+            p_arrival_idx = int(trace_attrs['p_arrival_sample']) + p_perturb
             p_impulse = self.impulse.get_impulse(p_arrival_idx, p_arrival_idx, length)
             
-            s_arrival_idx = int(trace_attrs['s_arrival_sample'])
+            s_arrival_idx = int(trace_attrs['s_arrival_sample']) + s_perturb
             s_impulse = self.impulse.get_impulse(s_arrival_idx, s_arrival_idx, length)
             
             end_idx = int(trace_attrs['coda_end_sample'])
             end_impulse = self.impulse.get_impulse(p_arrival_idx, end_idx, length)
 
         if self.crop is not None:
-            crop_start = random.randint(0, length - self.crop)
-            
+            crop_min = 0
+            crop_max = length - self.crop
+
+            # If not a noise signal
             if p_arrival_idx > 0:
-                crop_start = p_arrival_idx - random.randint(0, min(p_arrival_idx, self.crop))
+                # Whether to guarantee the P or the S
+                keep_p = random.random() < 0.5
+
+                # Guarantee the P arrival
+                if keep_p:
+                    crop_min = max(0, p_arrival_idx - self.crop)
+                    crop_max = min(p_arrival_idx, crop_max)
+                # Guarantee the S arrival
+                else:
+                    crop_min = max(0, s_arrival_idx - self.crop)
+                    crop_max = min(s_arrival_idx, crop_max)
+
+            crop_start = random.randint(crop_min, crop_max)
 
             crop_end = crop_start + self.crop
 
