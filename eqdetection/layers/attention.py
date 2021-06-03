@@ -1,3 +1,10 @@
+"""Implements the layers used in the EQTransformer.
+
+This module implements the FeedForward, Attention, and Transformer layers used
+in the EQTransformer in PyTorch. Code is translated from the EQTransformer
+source code.
+"""
+
 import torch
 import torch.nn as nn
 

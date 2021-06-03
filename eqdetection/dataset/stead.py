@@ -1,6 +1,6 @@
 import random
 import torch
-import torch.utils.data as data
+from torch.utils import data
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
